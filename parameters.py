@@ -5,20 +5,253 @@ parameters.py
 =============
 Default configuration for whole-brain simulations using AdEx mean-field models.
 
-This module defines a single `Parameters` class that stores all model, simulation,
-and connectivity settings required for large-scale AdEx-based whole-brain simulations.
-It can be imported directly and used as:
+This module now contains two main parts:
 
-    from parameters import Parameters
+SECTION 1:  Parameter class hierarchy
+    - Static and time-varying parameter classes (Parameter, ListParameter,
+      VaryingParameter, GaussianParameter, OrnsteinUhlenbeckParameter, etc.)
+    - These provide dynamic behaviour for any model parameter via a unified .get(t) API.
+
+SECTION 2:  Default Parameters class (AdEx mean-field configuration)
+    - Stores all simulation, model, coupling, and monitor defaults.
+
+It can be imported and used directly:
+
+    from parameters import Parameters, GaussianParameter
     p = Parameters()
-    model = Base_Zerlaut_adaptation_first_order(**p.parameter_model)
-
-All default values are drawn from published fits of AdEx networks (Zerlaut et al., 2018;
-di Volo et al., 2018) and tuned for stability in typical large-scale simulations.
+    p.parameter_model["external_input_ex_ex"] = GaussianParameter("ext", 1000, 0.0003, 1e-4)
 """
 
+# ---------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------
 import os
+import numpy as np
+from abc import ABC
+import collections.abc
 
+
+# ---------------------------------------------------------------------------
+# SECTION 1: PARAMETER CLASSES (STATIC + TIME-VARYING)
+# ---------------------------------------------------------------------------
+class Parameter(ABC):
+    """
+    Abstract base for all parameters (static or varying).
+
+    Attributes
+    ----------
+    name : str
+        Parameter key (must correspond to a model attribute).
+    value : any
+        Current value (scalar, list, or nested Parameter).
+
+    Notes
+    -----
+    Provides a unified `.get(t)` interface so SimConfig can update models
+    without caring whether a parameter is static or time-dependent.
+    """
+    def __init__(self, name, value):
+        self.name = name
+        self.value = value
+
+    def get(self, t):
+        """Return parameter value at time t (static → just value)."""
+        return self.value
+
+    def __str__(self):
+        return str(self.value) if self.value is not None else ""
+
+    def __eq__(self, other):
+        return isinstance(other, Parameter) and self.name == other.name and self.value == other.value
+
+
+class ListParameter(Parameter):
+    """
+    A parameter represented by a list (or list of Parameters).
+
+    Used when:
+        - assigning per-region values, or
+        - combining static and time-varying parameters in a sequence.
+
+    Example
+    -------
+    >>> ListParameter("g", [0.2, 0.25, 0.22])
+    """
+    def __init__(self, name, value, custom_value_display="list"):
+        assert isinstance(value, list), \
+            "ListParameter requires a Python list (not numpy array)."
+        super().__init__(name, value)
+        self.custom_value_display = custom_value_display
+        self.varying_parameters_idxs = [i for i, v in enumerate(self.value)
+                                        if issubclass(type(v), Parameter)]
+
+    def __str__(self):
+        return self.custom_value_display
+
+    def __round__(self):
+        return self.custom_value_display
+
+    def reset(self):
+        for i in self.varying_parameters_idxs:
+            self.value[i].reset()
+
+    def get(self, t):
+        v = self.value[:]  # shallow copy
+        for i in self.varying_parameters_idxs:
+            v[i] = v[i].get(t=t)
+        return np.array(v)[:, np.newaxis]
+
+    def __getitem__(self, idx):
+        return self.value[idx]
+
+    def __list__(self):
+        return self.value
+
+
+class VaryingParameter(Parameter, ABC):
+    """
+    Abstract class for parameters that vary through time.
+    """
+    def __init__(self, name, value=None, log_values=False):
+        super().__init__(name, value)
+        self.log_values = log_values
+        if log_values:
+            self.prev_values = []
+
+    def get(self, t):
+        v = self._compute_value(t)
+        if self.log_values:
+            self.prev_values.append(v)
+        return v
+
+    def _compute_value(self, t):
+        raise NotImplementedError
+
+    def reset(self):
+        pass
+
+    def __str__(self):
+        return super().__str__()
+
+
+class PureFunctionParameter(VaryingParameter):
+    """
+    Calls a user-supplied function f(self, t) each time .get(t) is called.
+    """
+    def __init__(self, name, log_values, func):
+        super().__init__(name, log_values=log_values)
+        self._compute_value = func
+
+
+class PeriodicallyVaryingParameter(VaryingParameter, ABC):
+    """
+    Base class for parameters updated every `period` ms.
+    Holds previous value between updates for efficiency.
+    """
+    def __init__(self, name, period, log_values=False):
+        super().__init__(name, log_values=log_values)
+        self.period = period
+        self.count = 0
+
+    @staticmethod
+    def periodic(func):
+        def wrapper(self, *args, **kwargs):
+            if kwargs["t"] >= (self.count + 1) * self.period or not hasattr(self, "cur_value"):
+                self.count += 1
+                self.cur_value = func(self, *args, **kwargs)
+                if self.log_values:
+                    self.prev_values.append(self.cur_value)
+            return self.cur_value
+        return wrapper
+
+    def __str__(self):
+        return super().__str__() + f"period_{self.period}_"
+
+    def reset(self):
+        self.count = 0
+
+
+class GaussianParameter(PeriodicallyVaryingParameter):
+    """Sample from N(mean, std) every `period` ms."""
+    def __init__(self, name, period, mean, std, force_non_negative=False, log_values=False):
+        super().__init__(name, period, log_values=log_values)
+        self.mean = mean
+        self.std = std
+        self.force_non_negative = force_non_negative
+
+    @PeriodicallyVaryingParameter.periodic
+    def get(self, t):
+        v = np.random.normal(loc=self.mean, scale=self.std)
+        return np.abs(v) if self.force_non_negative else v
+
+    def __str__(self):
+        return f"{self.name}_gaussian_{self.mean}_{self.std}"
+
+    def __eq__(self, other):
+        return (isinstance(other, GaussianParameter) and
+                (self.mean, self.std, self.period) ==
+                (other.mean, other.std, other.period))
+
+
+class UniformParameter(PeriodicallyVaryingParameter):
+    """Sample from Uniform(min, max) every `period` ms."""
+    def __init__(self, name, period, min_, max_, log_values=False):
+        super().__init__(name, period, log_values=log_values)
+        self.min = min_
+        self.max = max_
+
+    @PeriodicallyVaryingParameter.periodic
+    def get(self, t):
+        return np.random.uniform(self.min, self.max)
+
+    def __str__(self):
+        return f"{self.name}_uniform_{self.min}_{self.max}"
+
+    def __eq__(self, other):
+        return (isinstance(other, UniformParameter) and
+                (self.period, self.min, self.max) ==
+                (other.period, other.min, other.max))
+
+
+class OrnsteinUhlenbeckParameter(VaryingParameter):
+    """
+    Parameter following an Ornstein–Uhlenbeck (OU) stochastic process:
+
+        x_{t+dt} = x_t + speed*(mean - x_t)*dt + volatility*sqrt(dt)*N(0,1)
+    """
+    def __init__(self, name, speed, mean, volatility, dt, x0=None, force_non_negative=False):
+        super().__init__(name)
+        self.speed = speed
+        self.mean = mean
+        self.volatility = volatility
+        self.dt = dt
+        self.x0 = mean if x0 is None else x0
+        self.x = self.x0
+        self.force_non_negative = force_non_negative
+
+    def get(self, t):
+        eps = np.random.normal(0, 1)
+        new_x = self.x + self.speed * (self.mean - self.x) * self.dt + \
+                self.volatility * np.sqrt(self.dt) * eps
+        self.x = max(new_x, 0.0) if self.force_non_negative else new_x
+        return self.x
+
+    def reset(self):
+        self.x = self.x0
+
+    def __str__(self):
+        return (f"{self.name}_OU_speed{self.speed}_mean{self.mean}_"
+                f"vol{self.volatility}_x0{self.x0}")
+
+    def __eq__(self, other):
+        return (isinstance(other, OrnsteinUhlenbeckParameter) and
+                (self.speed, self.mean, self.volatility, self.x0, self.dt) ==
+                (other.speed, other.mean, other.volatility, other.x0, other.dt))
+
+
+# ---------------------------------------------------------------------------
+# SECTION 2: DEFAULT PARAMETERS FOR WHOLE-BRAIN ADEX SIMULATIONS
+# ---------------------------------------------------------------------------
 
 class Parameters:
     """
