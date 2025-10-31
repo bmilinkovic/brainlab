@@ -36,9 +36,8 @@ import numpy.random as rgn
 import tvb.simulator.lab as lab
 
 # project utils
-from tvbsim.printer import Printer # TODO: replace with our own printer class
-from tvbsim.parameter import Parameter, ListParameter # TODO: replace with our own parameter class
-from parameters import Parameters
+from utils import Printer, print_dict_differences
+from parameters import Parameter, ListParameter, Parameters
 
 
 # connectivity helpers
