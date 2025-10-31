@@ -1,28 +1,35 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-zerlaut_all_in_one_clean.py
----------------------------
-Clean consolidation of five Zerlaut variants. Class names are prefixed
-per source to avoid collisions:
-  - Base_*           from Zerlaut.py
-  - Trial_*          from Zerlaut_trial.py
-  - Matteo_*         from Zerlaut_matteo.py
-  - Matteo_gK_gNa_*  from Zerlaut_matteo_gK_gNa.py
-  - GK_gNa_*         from Zerlaut_gK_gNa.py
-"""
 
-# ---- BEGIN SOURCE: Zerlaut.py ----
-"""
-Created on Wed Feb 24 10:32:01 2021
+## Imports ##
 
-@author: nuuria
-"""
-'\nMean field model based on Master equation about adaptative exponential leacky integrate and fire neurons population\n'
 from tvb.simulator.models.base import Model, numpy
 from tvb.basic.neotraits.api import NArray, Range, Final, List
 import scipy.special as sp_spec
 from numba import jit
+
+"""
+zerlaut.py
+---------------------------
+Clean consolidation of five Zerlaut variants. Class names are prefixed
+per source to avoid collisions:
+  - Base_*           originally from Zerlaut.py, but cleaned up and simplified
+  - Trial_*          originally from Zerlaut_trial.py, but cleaned up and simplified
+  - Matteo_*         originally from Zerlaut_matteo.py, but cleaned up and simplified
+  - Matteo_gK_gNa_*  originally from Zerlaut_matteo_gK_gNa.py, but cleaned up and simplified
+  - GK_gNa_*         originally from Zerlaut_gK_gNa.py, but cleaned up and simplified
+"""
+
+# ---- BEGIN SOURCE: Zerlaut.py ----
+"""
+Original creation date: Wed Feb 24 10:32:01 2021
+Extended and cleaned up date: Fri Oct 31 2025
+
+Original author: nuuria
+Extended and cleaned up by: Borjan Milinkovic
+
+Mean field model based on Master equation about adaptative exponential leaky integrate-and-fire neurons population
+"""
 
 class Base_Zerlaut_adaptation_first_order(Model):
     """
