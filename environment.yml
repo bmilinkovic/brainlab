@@ -15,4 +15,5 @@ dependencies:
   - seaborn
   - pip:
       - tvb-library
+      - jsonpickle
 
