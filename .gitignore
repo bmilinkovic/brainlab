@@ -1,0 +1,8 @@
+# Project-specific ignores
+results/
+result/
+data/
+__pycache__/
+*.pyc
+
+
